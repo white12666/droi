@@ -1,0 +1,61 @@
+name: Phone App IPA
+
+# An unsigned Release build of the Phone App, to be signed elsewhere (an
+# enterprise certificate, or a free Apple ID through a sideloading tool).
+# On a Mac, `pnpm install:phone` builds, signs and installs in one go instead.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/phone-ipa]
+
+jobs:
+  ipa:
+    # The Phone App is built with the iOS 27 SDK (ADR 0006).
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      # CocoaPods fails on non-ASCII paths without a UTF-8 locale.
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      # The deprecated Desktop Shell's Electron binary is not needed here.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate the iOS project
+        working-directory: apps/mobile
+        run: |
+          npx expo prebuild --platform ios --no-install
+          command -v pod || brew install cocoapods
+          cd ios && pod install
+
+      # CODE_SIGNING_ALLOWED=NO on the command line reaches the Pods' targets too.
+      - name: Build without signing
+        working-directory: apps/mobile
+        run: |
+          xcodebuild -workspace ios/Droi.xcworkspace -scheme Droi -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" -quiet build
+
+      - name: Package the IPA
+        working-directory: apps/mobile
+        run: |
+          VERSION=$(node -p 'require("../desktop/package.json").version')
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/Droi.app Payload/
+          zip -qry "Droi-$VERSION-unsigned.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Droi-unsigned-ipa
+          path: apps/mobile/Droi-*-unsigned.ipa
+          retention-days: 7
